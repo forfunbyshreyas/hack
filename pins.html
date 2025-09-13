@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Premium Road Map Planner</title>
+
+<!-- Leaflet CSS & JS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+<script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+
+<!-- Google Material Icons -->
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+
+<style>
+body { 
+  margin:0; 
+  font-family:'Poppins',sans-serif; 
+  background:#0e0f14; 
+  color:#fff; 
+  display:flex; 
+  flex-direction:column; 
+  padding-bottom:60px; /* keep space for bottom nav */
+}
+
+/* Top controls bar */
+#topControls { display:flex; justify-content:center; align-items:center; padding:20px; gap:10px; background:#1b1c2a; border-bottom:1px solid #333; }
+input[type="text"] { border:none; border-radius:12px; padding:12px 15px; font-size:14px; outline:none; background:#2a2b3c; color:#fff; }
+button { border:none; border-radius:12px; padding:12px 20px; font-size:14px; font-weight:bold; cursor:pointer; background:linear-gradient(135deg,#00f0ff,#ff00f0); color:#fff; }
+button.clear { background: linear-gradient(135deg,#ff416c,#ff4b2b); }
+
+/* Main area */
+#mainArea { display:flex; padding:20px; gap:20px; }
+#map { flex:3; border-radius:20px; min-height:400px; }
+#listsContainer { flex:1; display:flex; flex-direction:column; gap:20px; }
+
+#placeListContainer, #pinsListContainer { display:flex; flex-direction:column; background:#1b1c2a; padding:15px; border-radius:20px; min-height:150px; overflow-y:auto; }
+#placeListContainer h4, #pinsListContainer h4 { margin-bottom:10px; text-align:center; }
+
+ul { list-style:none; padding-left:0; flex-grow:1; overflow-y:auto; }
+li { background:#2a2b3c; padding:10px; border-radius:12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+li button { background:#ff416c; padding:4px 8px; border-radius:8px; font-size:12px; cursor:pointer; }
+
+/* Place info section */
+#placeInfoContainer { background:#1b1c2a; padding:15px; margin:20px; border-radius:20px; overflow-y:auto; max-height:500px; }
+#placeInfoContainer h2 { text-align:center; color:#00f0ff; margin-bottom:20px; }
+.place-card { background:#2a2b3c; border-radius:15px; padding:12px; margin-bottom:20px; }
+.place-card h3 { margin:0 0 8px; color:#00f0ff; }
+.place-card p { margin:0; font-size:14px; line-height:1.5; }
+
+/* Bottom nav */
+#bottomNav { 
+  display:flex; 
+  justify-content:space-around; 
+  align-items:center; 
+  background:#1b1c2a; 
+  padding:8px 0; 
+  border-top:1px solid #333; 
+  flex-shrink:0; 
+  position:fixed; 
+  bottom:0; 
+  left:0; 
+  width:100%; 
+  z-index:1000; 
+}
+.nav-item { display:flex; flex-direction:column; align-items:center; color:#aaa; font-size:12px; flex:1; cursor:pointer; }
+.nav-item.active { color:#00f0ff; font-weight:bold; }
+
+@media(max-width:768px){ #mainArea { flex-direction:column; } #map, #listsContainer { width:100%; min-height:300px; } }
+</style>
+</head>
+<body>
+
+<!-- Top Controls -->
+<div id="topControls">
+<input type="text" id="placeInput" placeholder="Enter a place">
+<button onclick="addPlace()">Add Place</button>
+<button onclick="calculateRoute()">Show Road Map</button>
+<button class="clear" onclick="clearAll()">Clear All</button>
+</div>
+
+<!-- Main Area -->
+<div id="mainArea">
+<div id="map"></div>
+<div id="listsContainer">
+  <div id="placeListContainer"><h4>Your Route</h4><ul id="placeList"></ul></div>
+  <div id="pinsListContainer"><h4>Pins</h4><ul id="pinsList"></ul></div>
+</div>
+</div>
+
+<!-- Place Info Section -->
+<div id="placeInfoContainer"><h2>Know Your Route</h2></div>
+
+<!-- Bottom Navigation -->
+<div id="bottomNav">
+  <div class="nav-item"><span class="material-icons">explore</span><p>Explore</p></div>
+  <div class="nav-item"><span class="material-icons">bookmark</span><p>Saved</p></div>
+  <div class="nav-item"><span class="material-icons">map</span><p>Home</p></div>
+  <div class="nav-item"><span class="material-icons">add_circle</span><p>Contribute</p></div>
+  <div class="nav-item active"><span class="material-icons">route</span><p>Create Your Own Road Map</p></div>
+</div>
+
+<script>
+var map = L.map('map').setView([20.5937, 78.9629], 5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+var places = [];
+var pins = [];
+var markers = [];
+var routeLayer = null;
+
+// Utility functions
+async function getCoords(place){
+    let url=`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(place)}&countrycodes=IN&limit=1`;
+    let resp=await fetch(url); let data=await resp.json();
+    if(data.length>0) return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+    alert("Could not find coordinates for: "+place); return null;
+}
+
+// Reverse geocode to get place name automatically
+async function getPlaceName(latlng){
+    let url=`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latlng.lat}&lon=${latlng.lng}`;
+    try{
+        let resp=await fetch(url);
+        let data=await resp.json();
+        return data.address && (data.address.city || data.address.town || data.address.village || data.address.hamlet || data.address.county || data.display_name) || "Unknown Place";
+    }catch{return "Unknown Place";}
+}
+
+// Wikipedia summary for route places only
+async function fetchWikiSummary(place){
+    let url=`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(place)}`;
+    try{ let resp=await fetch(url); let data=await resp.json(); if(data.extract) return data.extract; else return "No description found."; }catch{ return "Error fetching description."; }
+}
+
+// Add place from input
+async function addPlace(){
+    var input=document.getElementById('placeInput'); var place=input.value.trim(); if(!place) return;
+    places.push(place); let index=places.length-1;
+
+    // Route list
+    let li=document.createElement('li'); li.id=`place-${index}`; li.textContent=place;
+    let removeBtn=document.createElement('button'); removeBtn.textContent="Remove";
+    removeBtn.onclick=()=>{ removePlace(index); };
+    li.appendChild(removeBtn);
+    document.getElementById('placeList').appendChild(li);
+
+    // Info card
+    let summary=await fetchWikiSummary(place);
+    let card=document.createElement('div'); card.className="place-card"; card.id=`info-${index}`;
+    card.innerHTML=`<h3>${place}</h3><p>${summary}</p>`;
+    document.getElementById('placeInfoContainer').appendChild(card);
+
+    input.value='';
+    await calculateRoute();
+}
+
+// Remove place
+function removePlace(index){
+    places[index]=null;
+    let li=document.getElementById(`place-${index}`); if(li) li.remove();
+    let card=document.getElementById(`info-${index}`); if(card) card.remove();
+    places = places.filter(p=>p!==null);
+    calculateRoute();
+}
+
+// Clear all
+function clearAll(){
+    places=[]; pins=[]; markers.forEach(m=>map.removeLayer(m)); markers=[]; if(routeLayer) map.removeLayer(routeLayer);
+    document.getElementById('placeList').innerHTML=''; document.getElementById('pinsList').innerHTML='';
+    document.getElementById('placeInfoContainer').innerHTML='<h2>Know Your Route</h2>';
+}
+
+// Calculate route including pins
+async function calculateRoute(){
+    let coords=[]; let names=[];
+
+    // Get coordinates for places
+    for(let p of places){ let c=await getCoords(p); if(c){ coords.push(c); names.push(p); } }
+    for(let pin of pins){ if(pin){ coords.push([pin.latlng.lat, pin.latlng.lng]); names.push(pin.name); } }
+
+    if(coords.length<2) return;
+
+    // Remove old route & markers
+    if(routeLayer) map.removeLayer(routeLayer); markers.forEach(m=>map.removeLayer(m)); markers=[];
+
+    // OSRM request
+    let locs=coords.map(c=>c[1]+","+c[0]).join(";");
+    let url=`https://router.project-osrm.org/trip/v1/driving/${locs}?source=first&roundtrip=false&overview=full&geometries=geojson`;
+    let resp=await fetch(url); let data=await resp.json();
+    if(data.trips && data.trips.length>0){
+        routeLayer=L.geoJSON(data.trips[0].geometry,{color:'#00f0ff',weight:5}).addTo(map);
+        data.trips[0].waypoint_order.forEach(idx=>{
+            let m=L.marker(coords[idx]).addTo(map).bindPopup(names[idx]);
+            markers.push(m);
+        });
+        map.fitBounds(routeLayer.getBounds());
+    }
+}
+
+// Map click to add pin automatically
+map.on('click', async function(e){
+    let latlng=e.latlng;
+    let name = await getPlaceName(latlng);
+
+    let index=pins.length; pins.push({latlng,name});
+
+    // Marker
+    let marker=L.marker(latlng).addTo(map).bindPopup(name);
+
+    // Pins list
+    let li=document.createElement('li'); li.id=`pin-${index}`; li.textContent=name;
+    let removeBtn=document.createElement('button'); removeBtn.textContent="Remove";
+    removeBtn.onclick=()=>{ map.removeLayer(marker); li.remove(); pins[index]=null; pins=pins.filter(p=>p!==null); calculateRoute(); };
+    li.appendChild(removeBtn);
+    document.getElementById('pinsList').appendChild(li);
+
+    await calculateRoute();
+});
+
+// Enter key support
+document.getElementById('placeInput').addEventListener('keypress', function(e){ if(e.key==='Enter') addPlace(); });
+</script>
+</body>
+</html>
